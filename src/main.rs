@@ -46,9 +46,11 @@ impl<'s> Texture<'s> {
     fn set_pixel(&mut self, col: u32, row: u32, color: sdl2::pixels::Color) {
         let offset = col * self.bytes_per_pixel + row * self.bytes_per_pixel * self.width;
         let offset = offset as usize;
-        self.backing_buf[offset] = color.r;
-        self.backing_buf[offset + 1] = color.g;
-        self.backing_buf[offset + 2] = color.b;
+        let query = self.texture.query();
+        use std::convert::TryInto;
+        let val = color.to_u32(&query.format.try_into().expect("Pixel conversion issue"));
+        let bytes = val.to_ne_bytes();
+        self.backing_buf[offset..offset + 4].copy_from_slice(&bytes[..]);
     }
 }
 
@@ -72,8 +74,6 @@ pub fn main() -> Result<()> {
 
     // Setup pressure
     let mut pressure: Array2<f32> = Array::zeros((WIDTH as usize, HEIGHT as usize));
-    pressure[(400, 300)] = 1.0;
-    pressure[(410, 300)] = 1.0;
 
     // Setup vx
     let mut vx: Array2<f32> = Array::zeros((WIDTH as usize, HEIGHT as usize));
@@ -82,22 +82,44 @@ pub fn main() -> Result<()> {
     let mut vy: Array2<f32> = Array::zeros((WIDTH as usize, HEIGHT as usize));
 
     let mut event_pump = sdl_context.event_pump().unwrap();
-    let mut i = 0;
-    'running: loop {
-        i = (i + 1) % 255;
-        screen.set_pixel(i as u32, i as u32, Color::RGB(i, i, i));
 
-        let mut max_pressure = 0.0;
+    let mut scale = 1.0;
+    let mut speed = 0.25;
+    let mut freq = 0.125f32;
+
+    let mut i = 0.0;
+    'running: loop {
+        i = i + 1.0;
+        // screen.set_pixel(i as u32, i as u32, Color::RGB(i, i, i));
+        pressure[(400, 300)] = (i * freq).sin();
+        pressure[(410, 300)] = (i * freq).sin();
+        pressure[(420, 300)] = (i * freq).sin();
+        pressure[(430, 300)] = (i * freq).sin();
+        pressure[(440, 300)] = (i * freq).sin();
+        pressure[(450, 300)] = (i * freq).sin();
+        if i as usize % 10 == 0 {
+            println!("Val: {}", pressure[(390, 300)]);
+        }
+
+        let mut max_pressure = 0.0f32;
         for m in 1..WIDTH - 1 {
             for n in 1..HEIGHT - 1 {
                 let m = m as usize;
                 let n = n as usize;
-                vx[(m, n)] = vx[(m, n)] - 0.5 * (pressure[(m + 1, n)] - pressure[(m, n)]);
-                vy[(m, n)] = vy[(m, n)] - 0.5 * (pressure[(m, n + 1)] - pressure[(m, n)]);
+                vx[(m, n)] = vx[(m, n)] - speed * (pressure[(m + 1, n)] - pressure[(m, n)]);
+                vy[(m, n)] = vy[(m, n)] - speed * (pressure[(m, n + 1)] - pressure[(m, n)]);
                 pressure[(m, n)] = pressure[(m, n)]
-                    - 0.5 * ((vx[(m, n)] - vx[(m - 1, n)]) + (vy[(m, n)] - vy[(m, n - 1)]));
-                let color = (pressure[(m, n)] * 255.0) as u8;
-                screen.set_pixel(m as u32, n as u32, Color::RGB(color, color, color));
+                    - speed * ((vx[(m, n)] - vx[(m - 1, n)]) + (vy[(m, n)] - vy[(m, n - 1)]));
+
+                // let color = ((pressure[(m, n)]).log10() + scale) as u8;
+                let p = pressure[(m, n)];
+                let color = if p > 0.0 {
+                    Color::RGB((p * scale) as u8, 0, 0)
+                } else {
+                    Color::RGB(0, (-p * scale) as u8, 0)
+                };
+
+                screen.set_pixel(m as u32, n as u32, color);
                 if pressure[(m, n)] > max_pressure {
                     max_pressure = pressure[(m, n)];
                 }
@@ -108,11 +130,11 @@ pub fn main() -> Result<()> {
             }
         }
         screen.update();
-        println!(
-            "Mean pressure: {}",
-            pressure.mean().expect("Non empty array")
-        );
-        println!("Max pressure: {}", max_pressure);
+        // println!(
+        //     "Mean pressure: {}",
+        //     pressure.mean().expect("Non empty array")
+        // );
+        // println!("Max pressure: {}", max_pressure);
         screen.update();
         canvas
             .copy(&screen.texture, None, None)
@@ -124,6 +146,34 @@ pub fn main() -> Result<()> {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'running,
+                Event::KeyDown {
+                    keycode: Some(Keycode::Equals),
+                    ..
+                } => {
+                    scale *= 2.0;
+                    println!("Scale is {}", scale);
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Minus),
+                    ..
+                } => {
+                    scale /= 2.0;
+                    println!("Scale is {}", scale);
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Num0),
+                    ..
+                } => {
+                    speed *= 2.0;
+                    println!("Speed is {}", speed);
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Num9),
+                    ..
+                } => {
+                    speed /= 2.0;
+                    println!("Speed is {}", speed);
+                }
                 _ => {}
             }
         }
