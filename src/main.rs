@@ -69,8 +69,14 @@ pub fn main() -> Result<()> {
     let screen = texture_creator.create_texture_streaming(None, WIDTH, HEIGHT)?;
     let mut screen = Texture::new(screen);
 
-    // Setup rho
-    let mut rho: Array2<f32> = Array::zeros((WIDTH as usize, HEIGHT as usize));
+    // Setup density and local_sound_speed
+    let mut density: Array2<f32> = Array::ones((WIDTH as usize, HEIGHT as usize));
+    let mut local_sound_speed: Array2<f32> = Array::ones((WIDTH as usize, HEIGHT as usize));
+
+    for x in 300..500 {
+        local_sound_speed[(x, 350)] = 0.0;
+        density[(x, 350)] = 100.0;
+    }
 
     // Setup pressure
     let mut pressure: Array2<f32> = Array::zeros((WIDTH as usize, HEIGHT as usize));
@@ -83,58 +89,86 @@ pub fn main() -> Result<()> {
 
     let mut event_pump = sdl_context.event_pump().unwrap();
 
+    let del_spatial = 0.01; // 1cm?
+    let del_t = 0.001; // 1ms?
+    let c0 = 2.0; // m/s?
+    let courant = c0 * del_t / del_spatial;
+
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 10000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create("sine.wav", spec).unwrap();
+    let amplitude = i16::MAX as f32;
+
     let mut scale = 1.0;
     let mut speed = 0.25;
-    let mut freq = 0.125f32;
+    let freq = 0.125f32;
+    let (mic_x, mic_y) = (200, 90);
 
     let mut i = 0.0;
     'running: loop {
         i = i + 1.0;
-        // screen.set_pixel(i as u32, i as u32, Color::RGB(i, i, i));
-        pressure[(400, 300)] = (i * freq).sin();
-        pressure[(410, 300)] = (i * freq).sin();
-        pressure[(420, 300)] = (i * freq).sin();
-        pressure[(430, 300)] = (i * freq).sin();
-        pressure[(440, 300)] = (i * freq).sin();
-        pressure[(450, 300)] = (i * freq).sin();
+        screen.set_pixel(mic_x as u32, mic_y as u32, Color::RGB(255, 255, 255));
+        pressure[(400, 300)] = (i * freq).sin() * 5.0;
         if i as usize % 10 == 0 {
-            println!("Val: {}", pressure[(390, 300)]);
+            println!("Val @ i of {} : {}", i, pressure[(mic_x, mic_y - 10)]);
         }
+        writer
+            .write_sample((pressure[(mic_x, mic_y - 10)] * amplitude) as i16)
+            .unwrap();
 
         let mut max_pressure = 0.0f32;
         for m in 1..WIDTH - 1 {
             for n in 1..HEIGHT - 1 {
                 let m = m as usize;
                 let n = n as usize;
-                vx[(m, n)] = vx[(m, n)] - speed * (pressure[(m + 1, n)] - pressure[(m, n)]);
-                vy[(m, n)] = vy[(m, n)] - speed * (pressure[(m, n + 1)] - pressure[(m, n)]);
+
+                let cvxp = 2.0 * courant / (density[(m + 1, n)] + density[(m, n)] * c0);
+                let cvyp = 2.0 * courant / (density[(m, n)] + density[(m, n + 1)] * c0);
+                let cvrp = density[(m, n)] * local_sound_speed[(m, n)].powi(2) * c0 * courant;
+                // if i as usize % 10 == 0 && m * n % 1000 == 0 {
+                //     dbg!(cvxp, cvyp, cvrp);
+                // }
+
+                vx[(m, n)] = vx[(m, n)] - cvxp * (pressure[(m + 1, n)] - pressure[(m, n)]);
+                vy[(m, n)] = vy[(m, n)] - cvyp * (pressure[(m, n + 1)] - pressure[(m, n)]);
                 pressure[(m, n)] = pressure[(m, n)]
-                    - speed * ((vx[(m, n)] - vx[(m - 1, n)]) + (vy[(m, n)] - vy[(m, n - 1)]));
+                    - cvrp * ((vx[(m, n)] - vx[(m - 1, n)]) + (vy[(m, n)] - vy[(m, n - 1)]));
 
                 // let color = ((pressure[(m, n)]).log10() + scale) as u8;
                 let p = pressure[(m, n)];
                 let color = if p > 0.0 {
-                    Color::RGB((p * scale) as u8, 0, 0)
+                    Color::RGB((p * scale) as u8, 0, (density[(m, n)] * 2.0) as u8)
                 } else {
-                    Color::RGB(0, (-p * scale) as u8, 0)
+                    Color::RGB(0, (-p * scale) as u8, (density[(m, n)] * 2.0) as u8)
                 };
 
                 screen.set_pixel(m as u32, n as u32, color);
                 if pressure[(m, n)] > max_pressure {
                     max_pressure = pressure[(m, n)];
                 }
-                // vx[(m, n)] = vx[(m, n)] - Cvxp[(m, n)] * (pressure[(m + 1, n)] - pressure[(m, n)]);
-                // vy[(m, n)] = vy[(m, n)] - Cvyp[(m, n)] * (pressure[(m, n + 1)] - pressure[(m, n)]);
-                // pressure[(m, n)] = pressure[(m, n)]
-                //     - Cprv(m, n) * ((vx[(m, n)] - vx[(m - 1, n)]) + (vy[(m, n)] - vy(m, n - 1)));
             }
         }
-        screen.update();
+        // screen.update();
         // println!(
         //     "Mean pressure: {}",
         //     pressure.mean().expect("Non empty array")
         // );
-        // println!("Max pressure: {}", max_pressure);
+        if i as usize % 10 == 0 {
+            println!("Max pressure: {}", max_pressure);
+        }
+        for i in 0..5 {
+            for j in 0..5 {
+                screen.set_pixel(
+                    (mic_x + i) as u32,
+                    (mic_y + j) as u32,
+                    Color::RGB(255, 255, 255),
+                );
+            }
+        }
         screen.update();
         canvas
             .copy(&screen.texture, None, None)
@@ -174,13 +208,28 @@ pub fn main() -> Result<()> {
                     speed /= 2.0;
                     println!("Speed is {}", speed);
                 }
+                Event::MouseMotion {
+                    mousestate: state,
+                    x,
+                    y,
+                    ..
+                } => {
+                    if state.left() {
+                        for i in 0..3 {
+                            for j in 0..3 {
+                                local_sound_speed[(x as usize + i, y as usize + j)] = 0.0;
+                                density[(x as usize + i, y as usize + j)] = 100.0;
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
         // The rest of the game loop goes here...
 
         canvas.present();
-        ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
+        // ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
     }
     Ok(())
 }
